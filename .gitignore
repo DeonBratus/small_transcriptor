@@ -2,3 +2,5 @@ __pycache__
 .venv
 results
 uploads
+vosk-model*
+*.mp3
