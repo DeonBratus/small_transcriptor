@@ -5,3 +5,8 @@ vosk==0.3.45
 pyannote.audio==3.1.1
 python-multipart==0.0.6
 numpy==1.24.3
+
+whisper
+
+onnxruntime
+onnxruntime-gpu

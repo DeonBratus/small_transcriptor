@@ -6,19 +6,16 @@ import urllib.request
 import zipfile
 from typing import List, Dict, Optional
 from pydub import AudioSegment
-from collections import defaultdict
 import torch
-import torchaudio
 from pyannote.audio import Pipeline
 from vosk import Model, KaldiRecognizer
-import time
 
 class Transcriptor:
     """
     Класс для транскрибации MP3 файлов с разделением по спикерам и поддержкой GPU
     """
     
-    def __init__(self, model_path: str = "vosk-model-ru-0.42", use_gpu: bool = True):
+    def __init__(self, model_path: str = "models/vosk-model-ru-0.42", use_gpu: bool = True, is_advanced_segmentation=False):
         """
         Инициализация транскрибатора
         
@@ -31,6 +28,7 @@ class Transcriptor:
         self.use_gpu = use_gpu
         self.speaker_pipeline = None
         self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
+        self.is_advanced_segmentation = False
         
         print(f"Используемое устройство: {self.device}")
         
@@ -46,7 +44,7 @@ class Transcriptor:
             print("Модель Vosk не найдена. Скачиваем...")
             
             model_url = "https://alphacephei.com/vosk/models/vosk-model-ru-0.42.zip"
-            zip_path = "vosk-model-ru-0.42.zip"
+            zip_path = "models/vosk-model-ru-0.42.zip"
 
             urllib.request.urlretrieve(model_url, zip_path)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -268,7 +266,7 @@ class Transcriptor:
             results = self.transcribe_audio(wav_path)
             
             # Используем продвинутое разделение спикеров если доступно
-            if self.speaker_pipeline:
+            if self.speaker_pipeline and self.is_advanced_segmentation:
                 segments = self.advanced_speaker_segmentation(wav_path, results)
             else:
                 segments = self.simple_speaker_segmentation(results, num_speakers)

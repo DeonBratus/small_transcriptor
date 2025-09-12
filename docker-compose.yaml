@@ -4,10 +4,10 @@ services:
   transcription-api:
     build: .
     ports:
-      - "8000:8000"
+      - "8002:8000"
     volumes:
-      - models_volume:/app/models
-      - data_volume:/app/data
+      - ./models_volume:/app/models
+      - ./data_volume:/app/data
     environment:
       - PYTHONUNBUFFERED=1
     deploy:

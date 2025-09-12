@@ -20,7 +20,7 @@ async def startup_event():
     """Инициализация при запуске"""
     global transcriptor
     try:
-        transcriptor = Transcriptor(use_gpu=True)
+        transcriptor = Transcriptor(use_gpu=True, is_advanced_segmentation=False)
         print("Транскрибатор успешно инициализирован")
         if torch.cuda.is_available():
             print(f"GPU доступен: {torch.cuda.get_device_name(0)}")
