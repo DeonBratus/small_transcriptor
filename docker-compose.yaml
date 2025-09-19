@@ -1,8 +1,12 @@
 version: '3.8'
 
 services:
-  transcription-api:
-    build: .
+  transcriptor:
+    build:
+      context: ./transcriptor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    image: transcriptor:latest
     ports:
       - "8002:8000"
     volumes:
@@ -17,7 +21,17 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+  ai-judge:
+    build:
+      context: ./ai-judge
+      dockerfile: Dockerfile
     restart: unless-stopped
+    image: ai-judge:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - PYTHONUNBUFFERED=1
 
 volumes:
   models_volume:

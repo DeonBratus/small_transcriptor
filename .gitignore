@@ -4,3 +4,5 @@ results
 uploads
 vosk-model*
 *.mp3
+*.zip
+node_modules
