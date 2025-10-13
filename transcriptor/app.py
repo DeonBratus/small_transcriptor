@@ -5,13 +5,13 @@ from fastapi.background import BackgroundTasks
 import os
 import tempfile
 from transcriptor import Transcriptor
-import torch
 from models import TranscriptionRequest, TranscriptionResponse, TranscriptionSegment
+from typing import Optional
 
 app = FastAPI(
     title="Audio Transcription API",
-    description="API для транскрибации аудио с разделением по спикерам с использованием GPU",
-    version="1.0.0"
+    description="API для транскрибации аудио с разделением по спикерам с поддержкой многопоточности",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -30,12 +30,8 @@ async def startup_event():
     """Инициализация при запуске"""
     global transcriptor
     try:
-        transcriptor = Transcriptor(use_gpu=True, is_advanced_segmentation=False)
+        transcriptor = Transcriptor(is_advanced_segmentation=False)
         print("Транскрибатор успешно инициализирован")
-        if torch.cuda.is_available():
-            print(f"GPU доступен: {torch.cuda.get_device_name(0)}")
-        else:
-            print("GPU не доступен, используется CPU")
     except Exception as e:
         print(f"Ошибка инициализации: {e}")
         raise
@@ -48,7 +44,9 @@ async def root():
 async def transcribe_audio(
     file: UploadFile = File(...),
     num_speakers: int = 4,
-    use_gpu: bool = True
+    use_multithreading: bool = True,
+    chunk_duration: float = 30.0,
+    max_workers: Optional[int] = None
 ):
     if not transcriptor:
         raise HTTPException(status_code=503, detail="Транскрибатор не инициализирован")
@@ -67,8 +65,9 @@ async def transcribe_audio(
         temp_file.write(content)
         temp_file.close()
         
-        # Устанавливаем использование GPU
-        transcriptor.set_use_gpu(use_gpu)
+        # Настраиваем количество потоков если указано
+        if max_workers is not None:
+            transcriptor.max_workers = max_workers
         
         # Транскрибация
         import time
@@ -76,7 +75,9 @@ async def transcribe_audio(
         
         result = transcriptor.transcribe_mp3_with_speakers(
             temp_file.name, 
-            num_speakers=num_speakers
+            num_speakers=num_speakers,
+            use_multithreading=use_multithreading,
+            chunk_duration=chunk_duration
         )
         
         processing_time = time.time() - start_time
@@ -90,7 +91,8 @@ async def transcribe_audio(
         return {
             "segments": result,
             "processing_time": round(processing_time, 2),
-            "gpu_used": use_gpu and torch.cuda.is_available()
+            "multithreading_used": use_multithreading,
+            "threads_count": transcriptor.max_workers
         }
         
     except Exception as e:
@@ -103,9 +105,11 @@ async def transcribe_and_download(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     num_speakers: int = 4,
-    use_gpu: bool = True
+    use_multithreading: bool = True,
+    chunk_duration: float = 30.0,
+    max_workers: Optional[int] = None
 ):
-    result = await transcribe_audio(file, num_speakers, use_gpu)
+    result = await transcribe_audio(file, num_speakers, use_multithreading, chunk_duration, max_workers)
     
     # Сохраняем во временный файл
     temp_result = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
@@ -114,7 +118,8 @@ async def transcribe_and_download(
         f.write(f"Результаты транскрибации\n")
         f.write(f"Файл: {file.filename}\n")
         f.write(f"Время обработки: {result['processing_time']} сек\n")
-        f.write(f"Использовался GPU: {'Да' if result['gpu_used'] else 'Нет'}\n")
+        f.write(f"Многопоточность: {'Да' if result['multithreading_used'] else 'Нет'}\n")
+        f.write(f"Количество потоков: {result['threads_count']}\n")
         f.write("=" * 60 + "\n\n")
         
         for segment in result['segments']:

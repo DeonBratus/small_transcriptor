@@ -17,10 +17,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Установка PyTorch с поддержкой CUDA
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-RUN pip install triton==2.1.0
 # Копирование исходного кода
 COPY app.py .
 COPY transcriptor.py .

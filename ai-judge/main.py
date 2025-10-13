@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 from typing import Optional
 import asyncio
 
-from app.evaluator import PresentationEvaluator
-from app.utils import setup_logging, log_error, log_info
+from evaluation_service import EvaluationService
+from utils import setup_logging, log_error, log_info
 
 # Настройка логирования
 logger = setup_logging()
@@ -55,19 +55,19 @@ async def evaluate_thesis_and_presentation(
             shutil.copyfileobj(pptx_file.file, f)
         log_info(logger, f"Saved PPTX file: {pptx_file.filename} -> {pptx_path}")
 
-        # Создаем evaluator
-        evaluator = PresentationEvaluator(
+        # Создаем evaluation service
+        evaluation_service = EvaluationService(
             vision_model=vision_model,
             eval_model=eval_model,
             ollama_base_url=ollama_base_url,
         )
-        log_info(logger, "Created PresentationEvaluator instance")
+        log_info(logger, "Created EvaluationService instance")
 
         # Функция для генерации стрима
         async def generate():
             try:
                 log_info(logger, "Starting stream evaluation")
-                for chunk in evaluator.evaluate_stream(
+                for chunk in evaluation_service.evaluate_document_stream(
                     doc_path=docx_path,
                     presentation_path=pptx_path
                 ):

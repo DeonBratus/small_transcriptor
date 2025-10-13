@@ -1,10 +1,12 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 
 class TranscriptionRequest(BaseModel):
     num_speakers: int = 4
-    use_gpu: bool = True
+    use_multithreading: bool = True
+    chunk_duration: float = 30.0
+    max_workers: Optional[int] = None
 
 class TranscriptionSegment(BaseModel):
     speaker: str
@@ -15,4 +17,5 @@ class TranscriptionSegment(BaseModel):
 class TranscriptionResponse(BaseModel):
     segments: List[TranscriptionSegment]
     processing_time: float
-    gpu_used: bool
+    multithreading_used: bool
+    threads_count: int

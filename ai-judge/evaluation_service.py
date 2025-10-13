@@ -1,154 +1,106 @@
-import os
-import base64
+"""
+Evaluation service using the new processor architecture.
+"""
+
 import requests
 import json
-from pptx import Presentation
-import docx
-from typing import Generator
-
-EMU_PER_INCH = 914400
-CM_PER_INCH = 2.54
+from typing import Generator, Optional, Dict, Any
+from processors import ProcessorFactory, BaseFileProcessor
 
 
-class PresentationEvaluator:
-    def __init__(self, vision_model, eval_model, ollama_base_url="http://localhost:11434", min_width_cm=20, min_height_cm=9):
+class EvaluationService:
+    """Service for evaluating documents and presentations."""
+    
+    def __init__(self, vision_model: str = "llava", eval_model: str = "llama3.2", 
+                 ollama_base_url: str = "http://localhost:11434"):
+        """
+        Initialize evaluation service.
+        
+        Args:
+            vision_model: Model for image description
+            eval_model: Model for evaluation
+            ollama_base_url: Base URL for Ollama API
+        """
         self.vision_model = vision_model
         self.eval_model = eval_model
         self.ollama_base_url = ollama_base_url.rstrip('/')
-        self.min_width_cm = min_width_cm
-        self.min_height_cm = min_height_cm
-        self.doc_text = ''
-        self.presentation_text = ''
-
-    # --- DOCX ---
-    def set_docx_transcript(self, path):
-        """Load a DOCX file and extract text."""
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"DOCX file not found: {path}")
-
-        try:
-            doc = docx.Document(path)
-            self.doc_text = "\n".join(
-                p.text for p in doc.paragraphs if p.text.strip()
-            )
-        except Exception as e:
-            raise ValueError(f"Error reading DOCX file '{path}': {e}")
-
-    # --- Image description ---
-    def describe_image(self, image_path):
-        """Describe image using Ollama vision model"""
-        try:
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-            # Prepare request for Ollama
-            payload = {
-                "model": self.vision_model,
-                "prompt": "Describe this slide visual in detail, preserving any numeric data and explaining what it shows:",
-                "images": [img_b64],
-                "stream": False
-            }
-
-            response = requests.post(
-                f"{self.ollama_base_url}/api/generate",
-                json=payload,
-                timeout=60
-            )
+    
+    def evaluate_document(self, doc_path: str, presentation_path: Optional[str] = None) -> str:
+        """
+        Evaluate document and optionally presentation.
+        
+        Args:
+            doc_path: Path to document file
+            presentation_path: Optional path to presentation file
             
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "Could not describe image").strip()
-            else:
-                print(f"Error describing image: {response.status_code}")
-                return "Image description unavailable"
-                
-        except Exception as e:
-            print(f"Error in describe_image: {e}")
-            return "Image description unavailable"
-
-    def set_pptx_detailed_transcript(self, path, images_dir="/app/data/evaluation_files/extracted_images"):
-        """Load a PPTX file and extract a detailed transcript."""
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"PPTX file not found: {path}")
-
-        try:
-            prs = Presentation(path)
-        except Exception as e:
-            raise ValueError(f"Error opening PPTX file '{path}': {e}")
-
-        os.makedirs(images_dir, exist_ok=True)
-        all_slides_text = []
-
-        for slide_idx, slide in enumerate(prs.slides, start=1):
-            slide_text = [f"--- Slide {slide_idx} ---"]
-
-            # Title
-            title_shapes = [shape for shape in slide.shapes if shape.has_text_frame]
-            first_title = title_shapes[0].text.strip() if title_shapes and title_shapes[0].text else ""
-            if first_title:
-                slide_text.append(f"Title: {first_title}")
-
-            # Body text
-            body_texts = []
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    txt = shape.text.strip()
-                    if txt and txt != first_title:
-                        body_texts.append(txt)
-            if body_texts:
-                slide_text.append("Text:\n" + "\n".join(f"- {t}" for t in body_texts))
-
-            # Tables
-            for shape in slide.shapes:
-                if shape.has_table:
-                    table_content = []
-                    for row in shape.table.rows:
-                        row_data = [cell.text.strip() for cell in row.cells]
-                        table_content.append(row_data)
-                    if table_content:
-                        header = " | ".join(table_content[0])
-                        sep = " | ".join(["---"] * len(table_content[0]))
-                        rows = "\n".join(" | ".join(r) for r in table_content[1:])
-                        table_md = f"| {header} |\n| {sep} |\n" + "\n".join(f"| {r} |" for r in rows.split("\n"))
-                        slide_text.append("Table Content:\n" + table_md)
-
-            # Images
-            for img_idx, shape in enumerate(slide.shapes, start=1):
-                if shape.shape_type == 13:  # picture
-                    width_cm = shape.width / EMU_PER_INCH * CM_PER_INCH
-                    height_cm = shape.height / EMU_PER_INCH * CM_PER_INCH
-                    if width_cm >= self.min_width_cm and height_cm >= self.min_height_cm:
-                        image = shape.image
-                        ext = image.ext
-                        img_path = os.path.join(images_dir, f"slide_{slide_idx}_img_{img_idx}.{ext}")
-                        with open(img_path, "wb") as f:
-                            f.write(image.blob)
-                        img_desc = self.describe_image(img_path)
-                        slide_text.append(f"Image/Graph Description:\n{img_desc}")
-
-            all_slides_text.append("\n".join(slide_text))
-
-        self.presentation_text = "\n\n".join(all_slides_text)
-
-    # --- Model call for evaluation ---
-    def evaluate(self, doc_path, presentation_path=None):
-        """Evaluate document and presentation using Ollama"""
-        self.set_docx_transcript(doc_path)
-
-        if presentation_path is not None:
-            self.set_pptx_detailed_transcript(presentation_path)
-
-        if self.presentation_text:
-            task_prompt = self.build_thesis_presentation_prompt(self.doc_text, self.presentation_text)
+        Returns:
+            Evaluation result
+        """
+        # Process document
+        doc_processor = ProcessorFactory.create_processor(doc_path)
+        doc_text = doc_processor.process()
+        
+        # Process presentation if provided
+        presentation_text = ""
+        if presentation_path:
+            pptx_processor = ProcessorFactory.create_processor(
+                presentation_path, 
+                vision_model=self.vision_model,
+                ollama_base_url=self.ollama_base_url
+            )
+            presentation_text = pptx_processor.process()
+        
+        # Build prompt and evaluate
+        if presentation_text:
+            task_prompt = self._build_thesis_presentation_prompt(doc_text, presentation_text)
         else:
-            task_prompt = self.build_thesis_only_prompt(self.doc_text)
-
-        full_prompt = f"{self.system_prompt()}\n\n{task_prompt}"
-
+            task_prompt = self._build_thesis_only_prompt(doc_text)
+        
+        full_prompt = f"{self._system_prompt()}\n\n{task_prompt}"
+        
+        return self._call_evaluation_model(full_prompt)
+    
+    def evaluate_document_stream(self, doc_path: str, presentation_path: Optional[str] = None) -> Generator[str, None, None]:
+        """
+        Stream evaluation results.
+        
+        Args:
+            doc_path: Path to document file
+            presentation_path: Optional path to presentation file
+            
+        Yields:
+            Evaluation result chunks
+        """
+        # Process document
+        doc_processor = ProcessorFactory.create_processor(doc_path)
+        doc_text = doc_processor.process()
+        
+        # Process presentation if provided
+        presentation_text = ""
+        if presentation_path:
+            pptx_processor = ProcessorFactory.create_processor(
+                presentation_path,
+                vision_model=self.vision_model,
+                ollama_base_url=self.ollama_base_url
+            )
+            presentation_text = pptx_processor.process()
+        
+        # Build prompt and evaluate
+        if presentation_text:
+            task_prompt = self._build_thesis_presentation_prompt(doc_text, presentation_text)
+        else:
+            task_prompt = self._build_thesis_only_prompt(doc_text)
+        
+        full_prompt = f"{self._system_prompt()}\n\n{task_prompt}"
+        
+        yield from self._call_evaluation_model_stream(full_prompt)
+    
+    def _call_evaluation_model(self, prompt: str) -> str:
+        """Call evaluation model with prompt."""
         try:
             payload = {
                 "model": self.eval_model,
-                "prompt": full_prompt,
+                "prompt": prompt,
                 "stream": False,
                 "options": {
                     "temperature": 0.0,
@@ -170,25 +122,13 @@ class PresentationEvaluator:
                 
         except Exception as e:
             return f"Error during evaluation: {str(e)}"
-
-    def evaluate_stream(self, doc_path, presentation_path=None) -> Generator[str, None, None]:
-        """Stream evaluation results using Ollama"""
-        self.set_docx_transcript(doc_path)
-
-        if presentation_path is not None:
-            self.set_pptx_detailed_transcript(presentation_path)
-
-        if self.presentation_text:
-            task_prompt = self.build_thesis_presentation_prompt(self.doc_text, self.presentation_text)
-        else:
-            task_prompt = self.build_thesis_only_prompt(self.doc_text)
-
-        full_prompt = f"{self.system_prompt()}\n\n{task_prompt}"
-
+    
+    def _call_evaluation_model_stream(self, prompt: str) -> Generator[str, None, None]:
+        """Call evaluation model with streaming."""
         try:
             payload = {
                 "model": self.eval_model,
-                "prompt": full_prompt,
+                "prompt": prompt,
                 "stream": True,
                 "options": {
                     "temperature": 0.0,
@@ -219,10 +159,10 @@ class PresentationEvaluator:
                 
         except Exception as e:
             yield f"Error during evaluation: {str(e)}"
-
-    # --- Prompts ---
+    
     @staticmethod
-    def system_prompt():
+    def _system_prompt() -> str:
+        """Get system prompt for evaluation."""
         return """
 You are an experienced academic reviewer and pedagogue. For every request you must produce exactly two sections in this order:
 
@@ -234,9 +174,10 @@ Always obey the specific fields, labels and rating scales specified in the task 
 
 Do not output anything else outside the two sections. Be concise and deterministic: set tone professional, neutral, and specific. When you mention weaknesses, be constructive and give concrete ways to improve.
 """
-
+    
     @staticmethod
-    def build_thesis_presentation_prompt(doc_text, presentation_text):
+    def _build_thesis_presentation_prompt(doc_text: str, presentation_text: str) -> str:
+        """Build prompt for thesis and presentation evaluation."""
         return f"""
 Instructions:
 Evaluate the following THESIS/DOCUMENT and the PRESENTATION according to the general evaluation criteria below.
@@ -280,9 +221,10 @@ Please produce:
 
 Return only the two required blocks. Do not add extra commentary.
 """
-
+    
     @staticmethod
-    def build_thesis_only_prompt(doc_text):
+    def _build_thesis_only_prompt(doc_text: str) -> str:
+        """Build prompt for thesis-only evaluation."""
         return f"""
 Instructions:
 Evaluate the following THESIS/DOCUMENT according to the general evaluation criteria below.
@@ -292,7 +234,7 @@ Evaluation criteria (main, general — translated and written as labels you must
 1. "Relevance" / "Актуальность темы доклада" — How relevant the topic is to current challenges in the field.
 2. "Literature_and_Originality" / "Полнота обзора и оригинальность" — Completeness of literature review, analysis of prior solutions and their shortcomings, and the originality/novelty / theoretical significance of the proposed solution.
 3. "Practical_Significance" / "Практическая значимость" — Practical impact and the feasibility/quality of practical implementation (if applicable).
-4. "Author_Contribution" / "Личный вклад автора" — Degree of author’s personal contribution to the solution.
+4. "Author_Contribution" / "Личный вклад автора" — Degree of author's personal contribution to the solution.
 5. "PresentationQuality" is NOT required in this variant (omit presentation fields).
 
 --- DOCUMENT BEGIN ---
@@ -320,18 +262,3 @@ Please produce:
 
 Return only the two required blocks. Do not add extra commentary.
 """
-
-
-# === Example usage ===
-if __name__ == "__main__":
-    evaluator = PresentationEvaluator(
-        vision_model="llava",
-        eval_model="llama3.2",
-        ollama_base_url="http://localhost:11434"
-    )
-
-    doc_path = "example.docx"
-    pres_path = "example.pptx"
-
-    result = evaluator.evaluate(doc_path, pres_path)  # testing
-    print(result)
