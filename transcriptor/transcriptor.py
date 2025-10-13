@@ -7,12 +7,11 @@ import zipfile
 from typing import List, Dict, Optional
 from pydub import AudioSegment
 import torch
-from pyannote.audio import Pipeline
 from vosk import Model, KaldiRecognizer
 
 class Transcriptor:
     """
-    Класс для транскрибации MP3 файлов с разделением по спикерам и поддержкой GPU
+    Упрощенный транскрибатор с Vosk и простой диаризацией
     """
     
     def __init__(self, model_path: str = "models/vosk-model-ru-0.42", use_gpu: bool = True, is_advanced_segmentation=False):
@@ -21,34 +20,43 @@ class Transcriptor:
         
         Args:
             model_path: Путь к модели Vosk
-            use_gpu: Использовать ли GPU для обработки
+            use_gpu: Использовать ли GPU для обработки (для совместимости, Vosk работает только на CPU)
+            is_advanced_segmentation: Использовать ли продвинутую сегментацию (отключено для упрощения)
         """
         self.model_path = model_path
         self.model = None
-        self.use_gpu = use_gpu
-        self.speaker_pipeline = None
-        self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
-        self.is_advanced_segmentation = False
+        self.use_gpu = use_gpu  # Сохраняем для совместимости с API
+        self.is_advanced_segmentation = False  # Всегда используем простую диаризацию
         
-        print(f"Используемое устройство: {self.device}")
+        # Проверяем доступность GPU для информационных целей
+        if use_gpu and torch.cuda.is_available():
+            print(f"GPU доступен: {torch.cuda.get_device_name(0)}")
+            print("Примечание: Vosk работает только на CPU, GPU используется для других операций")
+        else:
+            print("Используется CPU для всех операций")
         
     def set_use_gpu(self, use_gpu: bool):
-        """Изменение режима использования GPU"""
+        """Изменение режима использования GPU (для совместимости с API)"""
         self.use_gpu = use_gpu
-        self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
-        print(f"Устройство изменено на: {self.device}")
+        if use_gpu and torch.cuda.is_available():
+            print(f"GPU режим включен: {torch.cuda.get_device_name(0)}")
+        else:
+            print("Используется CPU режим")
     
     def _download_model(self) -> None:
         """Скачивает и распаковывает модель Vosk если она отсутствует"""
         if not os.path.exists(self.model_path):
             print("Модель Vosk не найдена. Скачиваем...")
             
+            # Создаем директорию если не существует
+            os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+            
             model_url = "https://alphacephei.com/vosk/models/vosk-model-ru-0.42.zip"
             zip_path = "models/vosk-model-ru-0.42.zip"
 
             urllib.request.urlretrieve(model_url, zip_path)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(".")
+                zip_ref.extractall("models/")
             os.remove(zip_path)
             print("Модель Vosk скачана и распакована")
     
@@ -56,23 +64,9 @@ class Transcriptor:
         """Загружает модель Vosk"""
         if self.model is None:
             self._download_model()
+            print(f"Загружаем модель Vosk из {self.model_path}...")
             self.model = Model(self.model_path)
-    
-    def _load_speaker_pipeline(self):
-        """Загружает pipeline для разделения спикеров"""
-        if self.speaker_pipeline is None:
-            try:
-                # PyAnnote для диаризации (разделения спикеров)
-                self.speaker_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1",
-                    use_auth_token=False
-                )
-                if self.use_gpu and torch.cuda.is_available():
-                    self.speaker_pipeline = self.speaker_pipeline.to(self.device)
-                print("Модель разделения спикеров загружена")
-            except Exception as e:
-                print(f"Ошибка загрузки модели спикеров: {e}. Используем простой метод.")
-                self.speaker_pipeline = None
+            print("Модель Vosk загружена успешно")
     
     def convert_mp3_to_wav(self, mp3_path: str, sample_rate: int = 16000) -> Optional[str]:
         """
@@ -110,7 +104,7 @@ class Transcriptor:
         rec.SetWords(True)
 
         results = []
-        print("Идет распознавание...")
+        print("Идет распознавание речи...")
 
         while True:
             data = wf.readframes(4000)
@@ -124,59 +118,20 @@ class Transcriptor:
         results.append(final_result)
 
         wf.close()
+        print(f"Распознавание завершено. Получено {len(results)} сегментов.")
         return results
-    
-    def advanced_speaker_segmentation(self, audio_path: str, transcription_results: List[Dict]) -> List[Dict]:
-        """
-        Продвинутое разделение на спикеров с использованием pyannote
-        """
-        try:
-            self._load_speaker_pipeline()
-            
-            if self.speaker_pipeline is None:
-                return self.simple_speaker_segmentation(transcription_results)
-            
-            # Диаризация спикеров
-            diarization = self.speaker_pipeline(audio_path)
-            
-            segments = []
-            for result in transcription_results:
-                if 'result' not in result:
-                    continue
-
-                for word_info in result['result']:
-                    start = word_info['start']
-                    end = word_info['end']
-                    word = word_info['word']
-                    
-                    # Находим спикера для этого временного отрезка
-                    speaker = "SPEAKER_00"
-                    for turn, _, speaker_id in diarization.itertracks(yield_label=True):
-                        if turn.start <= start <= turn.end:
-                            speaker = str(speaker_id)
-                            break
-                    
-                    segments.append({
-                        'start': start,
-                        'end': end,
-                        'text': word,
-                        'speaker': speaker
-                    })
-            
-            return segments
-            
-        except Exception as e:
-            print(f"Ошибка продвинутой диаризации: {e}. Используем простой метод.")
-            return self.simple_speaker_segmentation(transcription_results)
     
     def simple_speaker_segmentation(self, transcription_results: List[Dict], 
                                    num_speakers: int = 4) -> List[Dict]:
         """
-        Простое разделение на спикеров по паузам
+        Упрощенное разделение на спикеров по паузам и длине сегментов
         """
+        print(f"Выполняем диаризацию для {num_speakers} спикеров...")
+        
         segments = []
         current_speaker = 0
         last_end_time = 0
+        speaker_change_threshold = 2.0  # Пауза в секундах для смены спикера
 
         for result in transcription_results:
             if 'result' not in result:
@@ -187,7 +142,8 @@ class Transcriptor:
                 end = word_info['end']
                 word = word_info['word']
 
-                if start - last_end_time > 1.5:
+                # Смена спикера при длинной паузе
+                if start - last_end_time > speaker_change_threshold:
                     current_speaker = (current_speaker + 1) % num_speakers
 
                 segments.append({
@@ -198,14 +154,18 @@ class Transcriptor:
                 })
                 last_end_time = end
 
+        print(f"Диаризация завершена. Получено {len(segments)} словесных сегментов.")
         return segments
     
     @staticmethod
     def group_segments_by_speaker(segments: List[Dict], 
-                                 time_threshold: float = 2.0) -> List[Dict]:
+                                 time_threshold: float = 3.0) -> List[Dict]:
         """
-        Группировка сегментов по спикерам
+        Группировка сегментов по спикерам с объединением близких по времени фраз
         """
+        if not segments:
+            return []
+            
         grouped = []
         current_group = None
 
@@ -215,9 +175,11 @@ class Transcriptor:
                 current_group['text'] = segment['text']
             elif (current_group['speaker'] == segment['speaker'] and
                   segment['start'] - current_group['end'] < time_threshold):
+                # Объединяем с предыдущим сегментом того же спикера
                 current_group['text'] += " " + segment['text']
                 current_group['end'] = segment['end']
             else:
+                # Начинаем новый сегмент
                 grouped.append(current_group)
                 current_group = segment.copy()
                 current_group['text'] = segment['text']
@@ -225,12 +187,13 @@ class Transcriptor:
         if current_group:
             grouped.append(current_group)
 
+        print(f"Группировка завершена. Получено {len(grouped)} речевых сегментов.")
         return grouped
     
     @staticmethod
     def format_time(seconds: float) -> str:
         """
-        Форматирование времени
+        Форматирование времени в читаемый вид
         """
         minutes = int(seconds // 60)
         seconds = seconds % 60
@@ -238,9 +201,12 @@ class Transcriptor:
     
     def save_results(self, segments: List[Dict], output_file: str = "transcription.txt") -> None:
         """
-        Сохранение результатов транскрибации
+        Сохранение результатов транскрибации в файл
         """
         with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("Результаты транскрибации\n")
+            f.write("=" * 50 + "\n\n")
+            
             for segment in segments:
                 f.write(f"[{segment['speaker']}] ")
                 f.write(f"{self.format_time(segment['start'])}-{self.format_time(segment['end'])}\n")
@@ -252,33 +218,35 @@ class Transcriptor:
     def transcribe_mp3_with_speakers(self, mp3_path: str, 
                                     num_speakers: int = 4) -> Optional[List[Dict]]:
         """
-        Транскрибация MP3 файла с разделением на спикеров
+        Основной метод транскрибации MP3 файла с разделением на спикеров
         """
-        print("Начинаем обработку MP3 файла...")
+        print(f"Начинаем обработку файла: {mp3_path}")
+        print(f"Количество спикеров: {num_speakers}")
 
+        # Конвертируем MP3 в WAV
         wav_path = self.convert_mp3_to_wav(mp3_path)
-
         if not wav_path:
-            print("Ошибка конвертации!")
+            print("Ошибка конвертации MP3 в WAV!")
             return None
 
         try:
+            # Транскрибация
             results = self.transcribe_audio(wav_path)
             
-            # Используем продвинутое разделение спикеров если доступно
-            if self.speaker_pipeline and self.is_advanced_segmentation:
-                segments = self.advanced_speaker_segmentation(wav_path, results)
-            else:
-                segments = self.simple_speaker_segmentation(results, num_speakers)
+            # Простая диаризация
+            segments = self.simple_speaker_segmentation(results, num_speakers)
 
+            # Группировка сегментов
             grouped_segments = self.group_segments_by_speaker(segments)
 
+            print(f"Обработка завершена успешно. Получено {len(grouped_segments)} речевых сегментов.")
             return grouped_segments
 
         except Exception as e:
             print(f"Ошибка транскрибации: {e}")
             return None
         finally:
+            # Очищаем временный файл
             if os.path.exists(wav_path):
                 os.unlink(wav_path)
-                print("Временный файл удален")
+                print("Временный WAV файл удален")

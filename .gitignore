@@ -6,3 +6,7 @@ vosk-model*
 *.mp3
 *.zip
 node_modules
+data_volume
+model-small*
+models_volume*
+models

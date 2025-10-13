@@ -1,21 +1,20 @@
 import os
 import base64
+import requests
+import json
 from pptx import Presentation
 import docx
-from openai import OpenAI
+from typing import Generator
 
 EMU_PER_INCH = 914400
 CM_PER_INCH = 2.54
 
 
 class PresentationEvaluator:
-    def __init__(self, vision_model, eval_model, api_key=None, min_width_cm=20, min_height_cm=9):
+    def __init__(self, vision_model, eval_model, ollama_base_url="http://localhost:11434", min_width_cm=20, min_height_cm=9):
         self.vision_model = vision_model
         self.eval_model = eval_model
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY not set and no api_key passed")
-        self.client = OpenAI(api_key=self.api_key, base_url="https://openrouter.ai/api/v1")
+        self.ollama_base_url = ollama_base_url.rstrip('/')
         self.min_width_cm = min_width_cm
         self.min_height_cm = min_height_cm
         self.doc_text = ''
@@ -37,28 +36,37 @@ class PresentationEvaluator:
 
     # --- Image description ---
     def describe_image(self, image_path):
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        """Describe image using Ollama vision model"""
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        response = self.client.chat.completions.create(
-            model=self.vision_model,
-            messages=[
-                {"role": "system",
-                 "content": "You are an academic reviewer describing slide visuals (charts, graphs, images) with numeric and textual details preserved."},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text",
-                         "text": "Describe this slide visual in detail, preserving any numeric data and explaining what it shows:"},
-                        {"type": "image_url", "image_url": f"data:image/png;base64,{img_b64}"}
-                    ]
-                }
-            ],
-            temperature=0.0
-        )
-        return response.choices[0].message.content.strip()
+            # Prepare request for Ollama
+            payload = {
+                "model": self.vision_model,
+                "prompt": "Describe this slide visual in detail, preserving any numeric data and explaining what it shows:",
+                "images": [img_b64],
+                "stream": False
+            }
 
-    def set_pptx_detailed_transcript(self, path, images_dir="extracted_images"):
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("response", "Could not describe image").strip()
+            else:
+                print(f"Error describing image: {response.status_code}")
+                return "Image description unavailable"
+                
+        except Exception as e:
+            print(f"Error in describe_image: {e}")
+            return "Image description unavailable"
+
+    def set_pptx_detailed_transcript(self, path, images_dir="/app/data/evaluation_files/extracted_images"):
         """Load a PPTX file and extract a detailed transcript."""
         if not os.path.isfile(path):
             raise FileNotFoundError(f"PPTX file not found: {path}")
@@ -124,7 +132,7 @@ class PresentationEvaluator:
 
     # --- Model call for evaluation ---
     def evaluate(self, doc_path, presentation_path=None):
-
+        """Evaluate document and presentation using Ollama"""
         self.set_docx_transcript(doc_path)
 
         if presentation_path is not None:
@@ -135,16 +143,82 @@ class PresentationEvaluator:
         else:
             task_prompt = self.build_thesis_only_prompt(self.doc_text)
 
-        response = self.client.chat.completions.create(
-            model=self.eval_model,
-            messages=[
-                {"role": "system", "content": self.system_prompt()},
-                {"role": "user", "content": task_prompt}
-            ],
-            temperature=0.0,
-            max_tokens=2500
-        )
-        return response.choices[0].message.content
+        full_prompt = f"{self.system_prompt()}\n\n{task_prompt}"
+
+        try:
+            payload = {
+                "model": self.eval_model,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 2500
+                }
+            }
+
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=300
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("response", "Evaluation failed")
+            else:
+                return f"Error: {response.status_code} - {response.text}"
+                
+        except Exception as e:
+            return f"Error during evaluation: {str(e)}"
+
+    def evaluate_stream(self, doc_path, presentation_path=None) -> Generator[str, None, None]:
+        """Stream evaluation results using Ollama"""
+        self.set_docx_transcript(doc_path)
+
+        if presentation_path is not None:
+            self.set_pptx_detailed_transcript(presentation_path)
+
+        if self.presentation_text:
+            task_prompt = self.build_thesis_presentation_prompt(self.doc_text, self.presentation_text)
+        else:
+            task_prompt = self.build_thesis_only_prompt(self.doc_text)
+
+        full_prompt = f"{self.system_prompt()}\n\n{task_prompt}"
+
+        try:
+            payload = {
+                "model": self.eval_model,
+                "prompt": full_prompt,
+                "stream": True,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 2500
+                }
+            }
+
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json=payload,
+                stream=True,
+                timeout=300
+            )
+            
+            if response.status_code == 200:
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line.decode('utf-8'))
+                            if 'response' in data:
+                                yield data['response']
+                            if data.get('done', False):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+            else:
+                yield f"Error: {response.status_code} - {response.text}"
+                
+        except Exception as e:
+            yield f"Error during evaluation: {str(e)}"
 
     # --- Prompts ---
     @staticmethod
@@ -251,12 +325,13 @@ Return only the two required blocks. Do not add extra commentary.
 # === Example usage ===
 if __name__ == "__main__":
     evaluator = PresentationEvaluator(
-        vision_model="gemma3:4b",
-        eval_model="gemma3:4b",
+        vision_model="llava",
+        eval_model="llama3.2",
+        ollama_base_url="http://localhost:11434"
     )
 
-    doc_path = "Тезис Скворцов.docx"
-    pres_path = "Презентация Классификация КМУ.pptx"
+    doc_path = "example.docx"
+    pres_path = "example.pptx"
 
     result = evaluator.evaluate(doc_path, pres_path)  # testing
     print(result)

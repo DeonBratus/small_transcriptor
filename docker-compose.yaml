@@ -1,6 +1,18 @@
 version: '3.8'
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    image: frontend:latest
+    ports:
+      - "3010:80"
+    depends_on:
+      - ai-judge
+
+
   transcriptor:
     build:
       context: ./transcriptor
@@ -8,7 +20,7 @@ services:
     restart: unless-stopped
     image: transcriptor:latest
     ports:
-      - "8002:8000"
+      - "8002:8002"
     volumes:
       - ./models_volume:/app/models
       - ./data_volume:/app/data
@@ -21,6 +33,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
   ai-judge:
     build:
       context: ./ai-judge
@@ -28,10 +41,18 @@ services:
     restart: unless-stopped
     image: ai-judge:latest
     ports:
-      - "8000:8000"
+      - "8005:8000"
+    volumes:
+      - ./data_volume:/app/data
     environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - PYTHONUNBUFFERED=1
+      - OLLAMA_BASE_URL=http://212.8.228.176:9000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   models_volume:
